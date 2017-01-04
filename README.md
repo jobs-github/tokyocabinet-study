@@ -4,6 +4,7 @@ Copyright (c) 2016
 
 *Author: jobs*  
 *Email: yao050421103@163.com*
+*Version: 1.4.48*
 
 * [API](#id_api)
     * [Performance](#id_api_perf)
