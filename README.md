@@ -693,7 +693,7 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
 
     memset(bdb->opaque, 0, 64);
 
-**comparator **
+**comparator**
 
 * `0x0` : lexical
 * `0x1` : decimal
