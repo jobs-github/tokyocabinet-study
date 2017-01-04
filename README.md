@@ -609,7 +609,7 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
 
 <h3 id="id_bdb_tcbdbput">Put</h3>
 
-** 写内存 **
+**所有的put操作都是写内存，并不直接持久化到硬盘**
 
 * [tcbdbleafaddrec](#id_code_tcbdbleafaddrec)
 
