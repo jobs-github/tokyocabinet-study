@@ -21,14 +21,19 @@ Copyright (c) 2016
     * [Meta Data Persistence](#id_bdb_meta)
     * [Node Data Persistence](#id_bdb_node)
     * [Leaf Data Persistence](#id_bdb_leaf)
+    * [History](#id_bdb_history)
 * [Code](#id_code)
+    * [TCBDB](#id_code_struct_tcbdb)
+    * [BDBREC](#id_code_bdbrec)
+    * [BDBLEAF](#id_code_bdbleaf)
+    * [BDBIDX](#id_code_bdbidx)
+    * [BDBNODE](#id_code_bdbnode)
     * [tcbdbcopy](#id_code_tcbdbcopy)
     * [tcbdbmemsync](#id_code_tcbdbmemsync)
     * [tcbdbnodeload](#id_code_tcbdbnodeload)
     * [tcbdbleafkill](#id_code_tcbdbleafkill)
     * [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
     * [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)
-    * [tcbdbprintmeta](#id_code_tcbdbprintmeta)
     * [tcbdbleafaddrec](#id_code_tcbdbleafaddrec)
     * [tcbdbleafsave](#id_code_tcbdbleafsave)
     * [tcbdbleafload](#id_code_tcbdbleafload)
@@ -48,6 +53,14 @@ Copyright (c) 2016
     * [TCSETVNUMBUF64](#id_code_id_code_tcsetvnumbuf64)
     * [TCREADVNUMBUF](#id_code_tcreadvnumbuf)
     * [TCREADVNUMBUF64](#id_code_tcreadvnumbuf64)
+    * [tcbdbputimpl](#id_code_tcbdbputimpl)
+    * [tcbdboutimpl](#id_code_tcbdboutimpl)
+    * [tcbdboutlist](#id_code_tcbdboutlist)
+    * [tcbdbgetimpl](#id_code_tcbdbgetimpl)
+    * [tcbdbgetnum](#id_code_tcbdbgetnum)
+    * [tcbdbgetlist](#id_code_tcbdbgetlist)
+    * [tcbdbcurjumpimpl](#id_code_tcbdbcurjumpimpl)
+    * [tcbdbcuroutimpl](#id_code_tcbdbcuroutimpl)
 
 <h2 id="id_api">API</h2>
 
@@ -559,34 +572,11 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
 
 <h3 id="id_bdb_structs">Structs</h3>
 
-    typedef struct {                         // type of structure for a record
-      int ksiz;                              // size of the key region
-      int vsiz;                              // size of the value region
-      TCLIST *rest;                          // list of value objects
-    } BDBREC;
-    
-    typedef struct {                         // type of structure for a leaf page
-      uint64_t id;                           // ID number of the leaf
-      TCPTRLIST *recs;                       // list of records
-      int size;                              // predicted size of serialized buffer
-      uint64_t prev;                         // ID number of the previous leaf
-      uint64_t next;                         // ID number of the next leaf
-      bool dirty;                            // whether to be written back
-      bool dead;                             // whether to be removed
-    } BDBLEAF;
-    
-    typedef struct {                         // type of structure for a page index
-      uint64_t pid;                          // ID number of the referring page
-      int ksiz;                              // size of the key region
-    } BDBIDX;
-    
-    typedef struct {                         // type of structure for a node page
-      uint64_t id;                           // ID number of the node
-      uint64_t heir;                         // ID of the child before the first index
-      TCPTRLIST *idxs;                       // list of indices
-      bool dirty;                            // whether to be written back
-      bool dead;                             // whether to be removed
-    } BDBNODE;
+* [TCBDB](#id_code_struct_tcbdb)
+* [BDBREC](#id_code_bdbrec)
+* [BDBLEAF](#id_code_bdbleaf)
+* [BDBIDX](#id_code_bdbidx)
+* [BDBNODE](#id_code_bdbnode)
 
 [回顶部](#id_top)
 
@@ -604,7 +594,6 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
     * [tcbdbleafkill](#id_code_tcbdbleafkill)
     * [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
     * [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)
-* [tcbdbprintmeta](#id_code_tcbdbprintmeta)
 
 [回顶部](#id_top)
 
@@ -755,7 +744,140 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
 
 [回顶部](#id_top)
 
+<h3 id="id_bdb_history">History</h3>
+
+涉及的数据: 
+
+    # TCBDB
+    uint64_t *hist; /* history array of visited nodes */
+    int hnum;       /* number of element of the history array */
+    
+大小：
+
+    # tcbdbnew
+    TCMALLOC(bdb->hist, sizeof(*bdb->hist) * BDBLEVELMAX);
+    
+    #define BDBLEVELMAX    64                // max level of B+ tree
+
+更新点：
+
+* [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)  
+    * [tcbdbputimpl](#id_code_tcbdbputimpl)  
+    * [tcbdboutimpl](#id_code_tcbdboutimpl)  
+    * [tcbdboutlist](#id_code_tcbdboutlist)  
+    * [tcbdbgetimpl](#id_code_tcbdbgetimpl)
+    * [tcbdbgetnum](#id_code_tcbdbgetnum)
+    * [tcbdbgetlist](#id_code_tcbdbgetlist)
+    * [tcbdbcurjumpimpl](#id_code_tcbdbcurjumpimpl)
+    * [tcbdbcuroutimpl](#id_code_tcbdbcuroutimpl)
+
+引用点：
+
+* [tcbdbleafkill](#id_code_tcbdbleafkill)
+* [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
+* [tcbdbputimpl](#id_code_tcbdbputimpl)
+
+总结：
+
+* `BDB` 的数据结构中没有对 **父节点** 的引用字段，这不便于回溯
+* `hist` 记录 **从树根到树叶的完整路径** ，用于回溯更新（树枝分裂，树叶删除）
+* 每次进行数据的更新、查询，都会对B+树进行搜索，每次搜索都会更新 `hist`，缓存最近一次的搜索记录（从树根到叶子）
+* B+树的更新会涉及到节点的分裂，分裂的过程会利用到缓存的 `hist` ，回溯更新至根节点
+* `hist` 最大的深度是64层
+
+[回顶部](#id_top)
+
 <h2 id="id_code">Code</h2>
+
+<h3 id="id_code_struct_tcbdb">TCBDB</h3>
+
+    typedef struct {                         /* type of structure for a B+ tree database */
+      void *mmtx;                            /* mutex for method */
+      void *cmtx;                            /* mutex for cache */
+      TCHDB *hdb;                            /* internal database object */
+      char *opaque;                          /* opaque buffer */
+      bool open;                             /* whether the internal database is opened */
+      bool wmode;                            /* whether to be writable */
+      uint32_t lmemb;                        /* number of members in each leaf */
+      uint32_t nmemb;                        /* number of members in each node */
+      uint8_t opts;                          /* options */
+      uint64_t root;                         /* ID number of the root page */
+      uint64_t first;                        /* ID number of the first leaf */
+      uint64_t last;                         /* ID number of the last leaf */
+      uint64_t lnum;                         /* number of leaves */
+      uint64_t nnum;                         /* number of nodes */
+      uint64_t rnum;                         /* number of records */
+      TCMAP *leafc;                          /* cache for leaves */
+      TCMAP *nodec;                          /* cache for nodes */
+      TCCMP cmp;                             /* pointer to the comparison function */
+      void *cmpop;                           /* opaque object for the comparison function */
+      uint32_t lcnum;                        /* maximum number of cached leaves */
+      uint32_t ncnum;                        /* maximum number of cached nodes */
+      uint32_t lsmax;                        /* maximum size of each leaf */
+      uint32_t lschk;                        /* counter for leaf size checking */
+      uint64_t capnum;                       /* capacity number of records */
+      uint64_t *hist;                        /* history array of visited nodes */
+      int hnum;                              /* number of element of the history array */
+      volatile uint64_t hleaf;               /* ID number of the leaf referred by the history */
+      volatile uint64_t lleaf;               /* ID number of the last visited leaf */
+      bool tran;                             /* whether in the transaction */
+      char *rbopaque;                        /* opaque for rollback */
+      volatile uint64_t clock;               /* logical clock */
+      volatile int64_t cnt_saveleaf;         /* tesing counter for leaf save times */
+      volatile int64_t cnt_loadleaf;         /* tesing counter for leaf load times */
+      volatile int64_t cnt_killleaf;         /* tesing counter for leaf kill times */
+      volatile int64_t cnt_adjleafc;         /* tesing counter for node cache adjust times */
+      volatile int64_t cnt_savenode;         /* tesing counter for node save times */
+      volatile int64_t cnt_loadnode;         /* tesing counter for node load times */
+      volatile int64_t cnt_adjnodec;         /* tesing counter for node cache adjust times */
+    } TCBDB;
+
+[回顶部](#id_top)
+
+<h3 id="id_code_bdbrec">BDBREC</h3>
+
+    typedef struct {                         // type of structure for a record
+      int ksiz;                              // size of the key region
+      int vsiz;                              // size of the value region
+      TCLIST *rest;                          // list of value objects
+    } BDBREC;
+
+[回顶部](#id_top)
+
+<h3 id="id_code_bdbleaf">BDBLEAF</h3>
+
+    typedef struct {                         // type of structure for a leaf page
+      uint64_t id;                           // ID number of the leaf
+      TCPTRLIST *recs;                       // list of records
+      int size;                              // predicted size of serialized buffer
+      uint64_t prev;                         // ID number of the previous leaf
+      uint64_t next;                         // ID number of the next leaf
+      bool dirty;                            // whether to be written back
+      bool dead;                             // whether to be removed
+    } BDBLEAF;
+
+[回顶部](#id_top)
+
+<h3 id="id_code_bdbidx">BDBIDX</h3>
+
+    typedef struct {                         // type of structure for a page index
+      uint64_t pid;                          // ID number of the referring page
+      int ksiz;                              // size of the key region
+    } BDBIDX;
+    
+[回顶部](#id_top)
+
+<h3 id="id_code_bdbnode">BDBNODE</h3>
+
+    typedef struct {                         // type of structure for a node page
+      uint64_t id;                           // ID number of the node
+      uint64_t heir;                         // ID of the child before the first index
+      TCPTRLIST *idxs;                       // list of indices
+      bool dirty;                            // whether to be written back
+      bool dead;                             // whether to be removed
+    } BDBNODE;
+    
+[回顶部](#id_top)
 
 <h3 id="id_code_tcbdbcopy">tcbdbcopy</h3>
 
@@ -1111,60 +1233,6 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
       bdb->lleaf = pid;
       bdb->hnum = hnum;
       return pid;
-    }
-
-[回顶部](#id_top)
-
-<h3 id="id_code_tcbdbprintmeta">tcbdbprintmeta</h3>
-
-    void tcbdbprintmeta(TCBDB *bdb){
-      assert(bdb);
-      int dbgfd = tchdbdbgfd(bdb->hdb);
-      if(dbgfd < 0) return;
-      if(dbgfd == UINT16_MAX) dbgfd = 1;
-      char buf[BDBPAGEBUFSIZ];
-      char *wp = buf;
-      wp += sprintf(wp, "META:");
-      wp += sprintf(wp, " mmtx=%p", (void *)bdb->mmtx);
-      wp += sprintf(wp, " cmtx=%p", (void *)bdb->cmtx);
-      wp += sprintf(wp, " hdb=%p", (void *)bdb->hdb);
-      wp += sprintf(wp, " opaque=%p", (void *)bdb->opaque);
-      wp += sprintf(wp, " open=%d", bdb->open);
-      wp += sprintf(wp, " wmode=%d", bdb->wmode);
-      wp += sprintf(wp, " lmemb=%u", bdb->lmemb);
-      wp += sprintf(wp, " nmemb=%u", bdb->nmemb);
-      wp += sprintf(wp, " opts=%u", bdb->opts);
-      wp += sprintf(wp, " root=%llx", (unsigned long long)bdb->root);
-      wp += sprintf(wp, " first=%llx", (unsigned long long)bdb->first);
-      wp += sprintf(wp, " last=%llx", (unsigned long long)bdb->last);
-      wp += sprintf(wp, " lnum=%llu", (unsigned long long)bdb->lnum);
-      wp += sprintf(wp, " nnum=%llu", (unsigned long long)bdb->nnum);
-      wp += sprintf(wp, " rnum=%llu", (unsigned long long)bdb->rnum);
-      wp += sprintf(wp, " leafc=%p", (void *)bdb->leafc);
-      wp += sprintf(wp, " nodec=%p", (void *)bdb->nodec);
-      wp += sprintf(wp, " cmp=%p", (void *)(intptr_t)bdb->cmp);
-      wp += sprintf(wp, " cmpop=%p", (void *)bdb->cmpop);
-      wp += sprintf(wp, " lcnum=%u", bdb->lcnum);
-      wp += sprintf(wp, " ncnum=%u", bdb->ncnum);
-      wp += sprintf(wp, " lsmax=%u", bdb->lsmax);
-      wp += sprintf(wp, " lschk=%u", bdb->lschk);
-      wp += sprintf(wp, " capnum=%llu", (unsigned long long)bdb->capnum);
-      wp += sprintf(wp, " hist=%p", (void *)bdb->hist);
-      wp += sprintf(wp, " hnum=%d", bdb->hnum);
-      wp += sprintf(wp, " hleaf=%llu", (unsigned long long)bdb->hleaf);
-      wp += sprintf(wp, " lleaf=%llu", (unsigned long long)bdb->lleaf);
-      wp += sprintf(wp, " tran=%d", bdb->tran);
-      wp += sprintf(wp, " rbopaque=%p", (void *)bdb->rbopaque);
-      wp += sprintf(wp, " clock=%llu", (unsigned long long)bdb->clock);
-      wp += sprintf(wp, " cnt_saveleaf=%lld", (long long)bdb->cnt_saveleaf);
-      wp += sprintf(wp, " cnt_loadleaf=%lld", (long long)bdb->cnt_loadleaf);
-      wp += sprintf(wp, " cnt_killleaf=%lld", (long long)bdb->cnt_killleaf);
-      wp += sprintf(wp, " cnt_adjleafc=%lld", (long long)bdb->cnt_adjleafc);
-      wp += sprintf(wp, " cnt_savenode=%lld", (long long)bdb->cnt_savenode);
-      wp += sprintf(wp, " cnt_loadnode=%lld", (long long)bdb->cnt_loadnode);
-      wp += sprintf(wp, " cnt_adjnodec=%lld", (long long)bdb->cnt_adjnodec);
-      *(wp++) = '\n';
-      tcwrite(dbgfd, buf, wp - buf);
     }
 
 [回顶部](#id_top)
@@ -2192,3 +2260,409 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
       } while(false)
 
 [回顶部](#id_top)
+
+<h3 id="id_code_tcbdbputimpl">tcbdbputimpl</h3>
+
+    static bool tcbdbputimpl(TCBDB *bdb, const void *kbuf, int ksiz, const void *vbuf, int vsiz,
+                             int dmode){
+      assert(bdb && kbuf && ksiz >= 0);
+      BDBLEAF *leaf = NULL;
+      uint64_t hlid = bdb->hleaf;
+      if(hlid < 1 || !(leaf = tcbdbgethistleaf(bdb, kbuf, ksiz, hlid))){
+        uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+        if(pid < 1) return false;
+        if(!(leaf = tcbdbleafload(bdb, pid))) return false;
+        hlid = 0;
+      }
+      if(!tcbdbleafaddrec(bdb, leaf, dmode, kbuf, ksiz, vbuf, vsiz)){
+        if(!bdb->tran) tcbdbcacheadjust(bdb);
+        return false;
+      }
+      int rnum = TCPTRLISTNUM(leaf->recs);
+      if(rnum > bdb->lmemb || (rnum > 1 && leaf->size > bdb->lsmax)){
+        if(hlid > 0 && hlid != tcbdbsearchleaf(bdb, kbuf, ksiz)) return false;
+        bdb->lschk = 0;
+        BDBLEAF *newleaf = tcbdbleafdivide(bdb, leaf);
+        if(!newleaf) return false;
+        if(leaf->id == bdb->last) bdb->last = newleaf->id;
+        uint64_t heir = leaf->id;
+        uint64_t pid = newleaf->id;
+        BDBREC *rec = TCPTRLISTVAL(newleaf->recs, 0);
+        char *dbuf = (char *)rec + sizeof(*rec);
+        int ksiz = rec->ksiz;
+        char *kbuf;
+        TCMEMDUP(kbuf, dbuf, ksiz);
+        while(true){
+          BDBNODE *node;
+          if(bdb->hnum < 1){
+            node = tcbdbnodenew(bdb, heir);
+            tcbdbnodeaddidx(bdb, node, true, pid, kbuf, ksiz);
+            bdb->root = node->id;
+            TCFREE(kbuf);
+            break;
+          }
+          uint64_t parent = bdb->hist[--bdb->hnum];
+          if(!(node = tcbdbnodeload(bdb, parent))){
+            TCFREE(kbuf);
+            return false;
+          }
+          tcbdbnodeaddidx(bdb, node, false, pid, kbuf, ksiz);
+          TCFREE(kbuf);
+          TCPTRLIST *idxs = node->idxs;
+          int ln = TCPTRLISTNUM(idxs);
+          if(ln <= bdb->nmemb) break;
+          int mid = ln / 2;
+          BDBIDX *idx = TCPTRLISTVAL(idxs, mid);
+          BDBNODE *newnode = tcbdbnodenew(bdb, idx->pid);
+          heir = node->id;
+          pid = newnode->id;
+          char *ebuf = (char *)idx + sizeof(*idx);
+          TCMEMDUP(kbuf, ebuf, idx->ksiz);
+          ksiz = idx->ksiz;
+          for(int i = mid + 1; i < ln; i++){
+            idx = TCPTRLISTVAL(idxs, i);
+            char *ebuf = (char *)idx + sizeof(*idx);
+            tcbdbnodeaddidx(bdb, newnode, true, idx->pid, ebuf, idx->ksiz);
+          }
+          ln = TCPTRLISTNUM(newnode->idxs);
+          for(int i = 0; i <= ln; i++){
+            idx = tcptrlistpop(idxs);
+            TCFREE(idx);
+          }
+          node->dirty = true;
+        }
+        if(bdb->capnum > 0 && bdb->rnum > bdb->capnum){
+          uint64_t xnum = bdb->rnum - bdb->capnum;
+          BDBCUR *cur = tcbdbcurnew(bdb);
+          while((xnum--) > 0){
+            if((cur->id < 1 || cur->clock != bdb->clock) && !tcbdbcurfirstimpl(cur)){
+              tcbdbcurdel(cur);
+              return false;
+            }
+            if(!tcbdbcuroutimpl(cur)){
+              tcbdbcurdel(cur);
+              return false;
+            }
+          }
+          tcbdbcurdel(cur);
+        }
+      } else if(rnum < 1){
+        if(hlid > 0 && hlid != tcbdbsearchleaf(bdb, kbuf, ksiz)) return false;
+        if(bdb->hnum > 0 && !tcbdbleafkill(bdb, leaf)) return false;
+      }
+      if(!bdb->tran && !tcbdbcacheadjust(bdb)) return false;
+      return true;
+    }
+    
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdboutimpl">tcbdboutimpl</h3>
+
+
+    static bool tcbdboutimpl(TCBDB *bdb, const char *kbuf, int ksiz){
+      assert(bdb && kbuf && ksiz >= 0);
+      BDBLEAF *leaf = NULL;
+      uint64_t hlid = bdb->hleaf;
+      if(hlid < 1 || !(leaf = tcbdbgethistleaf(bdb, kbuf, ksiz, hlid))){
+        uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+        if(pid < 1) return false;
+        if(!(leaf = tcbdbleafload(bdb, pid))) return false;
+        hlid = 0;
+      }
+      int ri;
+      BDBREC *rec = tcbdbsearchrec(bdb, leaf, kbuf, ksiz, &ri);
+      if(!rec){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return false;
+      }
+      tcbdbremoverec(bdb, leaf, rec, ri);
+      leaf->dirty = true;
+      if(TCPTRLISTNUM(leaf->recs) < 1){
+        if(hlid > 0 && hlid != tcbdbsearchleaf(bdb, kbuf, ksiz)) return false;
+        if(bdb->hnum > 0 && !tcbdbleafkill(bdb, leaf)) return false;
+      }
+      if(!bdb->tran && !tcbdbcacheadjust(bdb)) return false;
+      return true;
+    }
+
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdboutlist">tcbdboutlist</h3>
+
+
+    static bool tcbdboutlist(TCBDB *bdb, const char *kbuf, int ksiz){
+      assert(bdb && kbuf && ksiz >= 0);
+      BDBLEAF *leaf = NULL;
+      uint64_t hlid = bdb->hleaf;
+      if(hlid < 1 || !(leaf = tcbdbgethistleaf(bdb, kbuf, ksiz, hlid))){
+        uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+        if(pid < 1) return false;
+        if(!(leaf = tcbdbleafload(bdb, pid))) return false;
+        hlid = 0;
+      }
+      int ri;
+      BDBREC *rec = tcbdbsearchrec(bdb, leaf, kbuf, ksiz, &ri);
+      if(!rec){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return false;
+      }
+      int rnum = 1;
+      int rsiz = rec->ksiz + rec->vsiz;
+      if(rec->rest){
+        TCLIST *rest = rec->rest;
+        int ln = TCLISTNUM(rec->rest);
+        rnum += ln;
+        for(int i = 0; i < ln; i++){
+          rsiz += TCLISTVALSIZ(rest, i);
+        }
+        tclistdel(rest);
+      }
+      TCFREE(tcptrlistremove(leaf->recs, ri));
+      leaf->size -= rsiz;
+      leaf->dirty = true;
+      bdb->rnum -= rnum;
+      if(TCPTRLISTNUM(leaf->recs) < 1){
+        if(hlid > 0 && hlid != tcbdbsearchleaf(bdb, kbuf, ksiz)) return false;
+        if(bdb->hnum > 0 && !tcbdbleafkill(bdb, leaf)) return false;
+      }
+      if(!bdb->tran && !tcbdbcacheadjust(bdb)) return false;
+      return true;
+    }
+
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdbgetimpl">tcbdbgetimpl</h3>
+
+
+    static const char *tcbdbgetimpl(TCBDB *bdb, const char *kbuf, int ksiz, int *sp){
+      assert(bdb && kbuf && ksiz >= 0 && sp);
+      BDBLEAF *leaf = NULL;
+      uint64_t hlid = bdb->hleaf;
+      if(hlid < 1 || !(leaf = tcbdbgethistleaf(bdb, kbuf, ksiz, hlid))){
+        uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+        if(pid < 1) return NULL;
+        if(!(leaf = tcbdbleafload(bdb, pid))) return NULL;
+      }
+      BDBREC *rec = tcbdbsearchrec(bdb, leaf, kbuf, ksiz, NULL);
+      if(!rec){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return NULL;
+      }
+      *sp = rec->vsiz;
+      return (char *)rec + sizeof(*rec) + rec->ksiz + TCALIGNPAD(rec->ksiz);
+    }
+
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdbgetnum">tcbdbgetnum</h3>
+
+
+    static int tcbdbgetnum(TCBDB *bdb, const char *kbuf, int ksiz){
+      assert(bdb && kbuf && ksiz >= 0);
+      BDBLEAF *leaf = NULL;
+      uint64_t hlid = bdb->hleaf;
+      if(hlid < 1 || !(leaf = tcbdbgethistleaf(bdb, kbuf, ksiz, hlid))){
+        uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+        if(pid < 1) return 0;
+        if(!(leaf = tcbdbleafload(bdb, pid))) return 0;
+      }
+      BDBREC *rec = tcbdbsearchrec(bdb, leaf, kbuf, ksiz, NULL);
+      if(!rec){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return 0;
+      }
+      return rec->rest ? TCLISTNUM(rec->rest) + 1 : 1;
+    }
+
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdbgetlist">tcbdbgetlist</h3>
+
+
+    static TCLIST *tcbdbgetlist(TCBDB *bdb, const char *kbuf, int ksiz){
+      assert(bdb && kbuf && ksiz >= 0);
+      BDBLEAF *leaf = NULL;
+      uint64_t hlid = bdb->hleaf;
+      if(hlid < 1 || !(leaf = tcbdbgethistleaf(bdb, kbuf, ksiz, hlid))){
+        uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+        if(pid < 1) return NULL;
+        if(!(leaf = tcbdbleafload(bdb, pid))) return NULL;
+      }
+      BDBREC *rec = tcbdbsearchrec(bdb, leaf, kbuf, ksiz, NULL);
+      if(!rec){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return NULL;
+      }
+      TCLIST *vals;
+      TCLIST *rest = rec->rest;
+      if(rest){
+        int ln = TCLISTNUM(rest);
+        vals = tclistnew2(ln + 1);
+        TCLISTPUSH(vals, (char *)rec + sizeof(*rec) + rec->ksiz + TCALIGNPAD(rec->ksiz), rec->vsiz);
+        for(int i = 0; i < ln; i++){
+          const char *vbuf;
+          int vsiz;
+          TCLISTVAL(vbuf, rest, i, vsiz);
+          TCLISTPUSH(vals, vbuf, vsiz);
+        }
+      } else {
+        vals = tclistnew2(1);
+        TCLISTPUSH(vals, (char *)rec + sizeof(*rec) + rec->ksiz + TCALIGNPAD(rec->ksiz), rec->vsiz);
+      }
+      return vals;
+    }
+
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdbcurjumpimpl">tcbdbcurjumpimpl</h3>
+
+    static bool tcbdbcurjumpimpl(BDBCUR *cur, const char *kbuf, int ksiz, bool forward){
+      assert(cur && kbuf && ksiz >= 0);
+      TCBDB *bdb = cur->bdb;
+      cur->clock = bdb->clock;
+      uint64_t pid = tcbdbsearchleaf(bdb, kbuf, ksiz);
+      if(pid < 1){
+        cur->id = 0;
+        cur->kidx = 0;
+        cur->vidx = 0;
+        return false;
+      }
+      BDBLEAF *leaf = tcbdbleafload(bdb, pid);
+      if(!leaf){
+        cur->id = 0;
+        cur->kidx = 0;
+        cur->vidx = 0;
+        return false;
+      }
+      if(leaf->dead || TCPTRLISTNUM(leaf->recs) < 1){
+        cur->id = pid;
+        cur->kidx = 0;
+        cur->vidx = 0;
+        return forward ? tcbdbcurnextimpl(cur) : tcbdbcurprevimpl(cur);
+      }
+      int ri;
+      BDBREC *rec = tcbdbsearchrec(bdb, leaf, kbuf, ksiz, &ri);
+      if(rec){
+        cur->id = pid;
+        cur->kidx = ri;
+        if(forward){
+          cur->vidx = 0;
+        } else {
+          cur->vidx = rec->rest ? TCLISTNUM(rec->rest) : 0;
+        }
+        return true;
+      }
+      cur->id = leaf->id;
+      if(ri > 0 && ri >= TCPTRLISTNUM(leaf->recs)) ri = TCPTRLISTNUM(leaf->recs) - 1;
+      cur->kidx = ri;
+      rec = TCPTRLISTVAL(leaf->recs, ri);
+      char *dbuf = (char *)rec + sizeof(*rec);
+      if(forward){
+        int rv;
+        if(bdb->cmp == tccmplexical){
+          TCCMPLEXICAL(rv, kbuf, ksiz, dbuf, rec->ksiz);
+        } else {
+          rv = bdb->cmp(kbuf, ksiz, dbuf, rec->ksiz, bdb->cmpop);
+        }
+        if(rv < 0){
+          cur->vidx = 0;
+          return true;
+        }
+        cur->vidx = rec->rest ? TCLISTNUM(rec->rest) : 0;
+        return tcbdbcurnextimpl(cur);
+      }
+      int rv;
+      if(bdb->cmp == tccmplexical){
+        TCCMPLEXICAL(rv, kbuf, ksiz, dbuf, rec->ksiz);
+      } else {
+        rv = bdb->cmp(kbuf, ksiz, dbuf, rec->ksiz, bdb->cmpop);
+      }
+      if(rv > 0){
+        cur->vidx = rec->rest ? TCLISTNUM(rec->rest) : 0;
+        return true;
+      }
+      cur->vidx = 0;
+      return tcbdbcurprevimpl(cur);
+    }
+
+[回顶部](#id_top)
+
+<h3 id="id_code_tcbdbcuroutimpl">tcbdbcuroutimpl</h3>
+
+    static bool tcbdbcuroutimpl(BDBCUR *cur){
+      assert(cur);
+      TCBDB *bdb = cur->bdb;
+      if(cur->clock != bdb->clock){
+        if(!tcbdbleafcheck(bdb, cur->id)){
+          tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+          cur->id = 0;
+          cur->kidx = 0;
+          cur->vidx = 0;
+          return false;
+        }
+        cur->clock = bdb->clock;
+      }
+      BDBLEAF *leaf = tcbdbleafload(bdb, cur->id);
+      if(!leaf) return false;
+      TCPTRLIST *recs = leaf->recs;
+      if(cur->kidx >= TCPTRLISTNUM(recs)){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return false;
+      }
+      BDBREC *rec = TCPTRLISTVAL(recs, cur->kidx);
+      char *dbuf = (char *)rec + sizeof(*rec);
+      int vnum = rec->rest ? TCLISTNUM(rec->rest) + 1 : 1;
+      if(cur->vidx >= vnum){
+        tcbdbsetecode(bdb, TCENOREC, __FILE__, __LINE__, __func__);
+        return false;
+      }
+      if(rec->rest){
+        if(cur->vidx < 1){
+          leaf->size -= rec->vsiz;
+          int vsiz;
+          char *vbuf = tclistshift(rec->rest, &vsiz);
+          int psiz = TCALIGNPAD(rec->ksiz);
+          if(vsiz > rec->vsiz){
+            BDBREC *orec = rec;
+            TCREALLOC(rec, rec, sizeof(*rec) + rec->ksiz + psiz + vsiz + 1);
+            if(rec != orec){
+              tcptrlistover(leaf->recs, cur->kidx, rec);
+              dbuf = (char *)rec + sizeof(*rec);
+            }
+          }
+          memcpy(dbuf + rec->ksiz + psiz, vbuf, vsiz);
+          dbuf[rec->ksiz+psiz+vsiz] = '\0';
+          rec->vsiz = vsiz;
+          TCFREE(vbuf);
+        } else {
+          int vsiz;
+          char *vbuf = tclistremove(rec->rest, cur->vidx - 1, &vsiz);
+          leaf->size -= vsiz;
+          TCFREE(vbuf);
+        }
+        if(TCLISTNUM(rec->rest) < 1){
+          tclistdel(rec->rest);
+          rec->rest = NULL;
+        }
+      } else {
+        leaf->size -= rec->ksiz + rec->vsiz;
+        if(TCPTRLISTNUM(recs) < 2){
+          uint64_t pid = tcbdbsearchleaf(bdb, dbuf, rec->ksiz);
+          if(pid < 1) return false;
+          if(bdb->hnum > 0){
+            if(!(leaf = tcbdbleafload(bdb, pid))) return false;
+            if(!tcbdbleafkill(bdb, leaf)) return false;
+            if(leaf->next != 0){
+              cur->id = leaf->next;
+              cur->kidx = 0;
+              cur->vidx = 0;
+              cur->clock = bdb->clock;
+            }
+          }
+        }
+        TCFREE(tcptrlistremove(leaf->recs, cur->kidx));
+      }
+      bdb->rnum--;
+      leaf->dirty = true;
+      return tcbdbcuradjust(cur, true) || tchdbecode(bdb->hdb) == TCENOREC;
+    }
