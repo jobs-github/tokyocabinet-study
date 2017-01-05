@@ -6,13 +6,6 @@ Copyright (c) 2016
 *Email: yao050421103@163.com*  
 *Version: 1.4.48*  
 
-* [API](#id_api)
-    * [Performance](#id_api_perf)
-    * [CRUD](#id_api_crud)
-    * [Transaction](#id_api_trans)
-    * [Cursor](#id_api_cursor)
-    * [NOTES](#id_api_notes)
-    * [Sample](#id_api_sample)
 * [BDB](#id_bdb)
     * [Structs](#id_bdb_structs)
     * [Cache](#id_bdb_cache)
@@ -22,6 +15,13 @@ Copyright (c) 2016
     * [Node Data Persistence](#id_bdb_node)
     * [Leaf Data Persistence](#id_bdb_leaf)
     * [History](#id_bdb_history)
+* [API](#id_api)
+    * [Performance](#id_api_perf)
+    * [CRUD](#id_api_crud)
+    * [Transaction](#id_api_trans)
+    * [Cursor](#id_api_cursor)
+    * [NOTES](#id_api_notes)
+    * [Sample](#id_api_sample)
 * [Code](#id_code)
     * [TCBDB](#id_code_struct_tcbdb)
     * [BDBREC](#id_code_bdbrec)
@@ -61,6 +61,225 @@ Copyright (c) 2016
     * [tcbdbgetlist](#id_code_tcbdbgetlist)
     * [tcbdbcurjumpimpl](#id_code_tcbdbcurjumpimpl)
     * [tcbdbcuroutimpl](#id_code_tcbdbcuroutimpl)
+
+<h2 id="id_bdb">BDB</h2>
+
+<h3 id="id_bdb_structs">Structs</h3>
+
+* [TCBDB](#id_code_struct_tcbdb)
+* [BDBREC](#id_code_bdbrec)
+* [BDBLEAF](#id_code_bdbleaf)
+* [BDBIDX](#id_code_bdbidx)
+* [BDBNODE](#id_code_bdbnode)
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_cache">Cache</h3>
+
+    # TCBDB
+    TCMAP *leafc; /* cache for leaves */
+    TCMAP *nodec; /* cache for nodes */
+
+使用到的接口：
+
+* [tcbdbcopy](#id_code_tcbdbcopy)
+* [tcbdbmemsync](#id_code_tcbdbmemsync)
+* [tcbdbnodeload](#id_code_tcbdbnodeload)
+    * [tcbdbleafkill](#id_code_tcbdbleafkill)
+    * [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
+    * [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_tcbdbput">Put</h3>
+
+**所有的put操作都是写内存，并不直接持久化到硬盘**
+
+* [tcbdbleafaddrec](#id_code_tcbdbleafaddrec)
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_persist">Persist</h3>
+
+关键字段：
+
+    # tcbdbopenimpl
+    bdb->opaque = tchdbopaque(bdb->hdb);
+
+#### 调用点 ####
+
+* [tcbdbcopy](#id_code_tcbdbcopy)
+* [tcbdbmemsync](#id_code_tcbdbmemsync)
+    * [tcbdbtranbegin](#id_code_tcbdbtranbegin)
+    * [tcbdbtrancommit](#id_code_tcbdbtrancommit)
+* [tcbdbleafcacheout](#id_code_tcbdbleafcacheout)
+    * [tcbdbcacheclear](#id_code_tcbdbcacheclear)
+    * [tcbdbcacheadjust](#id_code_tcbdbcacheadjust)
+    * [tcbdbcloseimpl](#id_code_tcbdbcloseimpl)
+    * [tcbdbforeachimpl](#id_code_tcbdbforeachimpl)
+* [tcbdbopenimpl](#id_code_tcbdbopenimpl)
+
+[回顶部](#id_top)
+
+#### 持久化到硬盘的时机 ####
+
+* **B+树调整**
+* **事务**
+* **打开/关闭数据库**
+* **数据库备份**
+* **调用者遍历数据库**
+
+#### 二进制结构 ####
+
+* `meta data` 为固定64字节
+* `node data` 和 `leaf data` 的持久化通过 `hdb` 的 kv 接口完成，key由每个节点的 id 经过格式化处理后生成，value通过专用的二进制格式序列化而产生。
+* `node data` 和 `leaf data` 的专用二进制格式每个数字项都是 **可变长度** （数据压缩），相关的接口为：  
+    * [TCSETVNUMBUF](#id_code_tcsetvnumbuf)
+    * [TCSETVNUMBUF64](#id_code_id_code_tcsetvnumbuf64)
+    * [TCREADVNUMBUF](#id_code_tcreadvnumbuf)
+    * [TCREADVNUMBUF64](#id_code_tcreadvnumbuf64)
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_meta">Meta Data Persistence</h3>
+
+* [tcbdbdumpmeta](#id_code_tcbdbdumpmeta)
+* [tcbdbloadmeta](#id_code_tcbdbloadmeta)
+
+涉及的数据: 
+
+    # TCBDB
+    TCCMP cmp; /* pointer to the comparison function */
+    uint32_t lmemb; /* number of members in each leaf */
+    uint32_t nmemb; /* number of members in each node */
+    uint64_t root; /* ID number of the root page */
+    uint64_t first; /* ID number of the first leaf */
+    uint64_t last; /* ID number of the last leaf */
+    uint64_t lnum; /* number of leaves */
+    uint64_t nnum; /* number of nodes */
+    uint64_t rnum; /* number of records */
+    
+    # reference
+    
+    # tcbdbsearchleaf
+    uint64_t pid = bdb->root;
+    # tcbdbcurfirstimpl
+    cur->id = bdb->first;
+    # tcbdbcurlastimpl
+    cur->id = bdb->last;
+
+二进制结构：
+
+![meta_data](meta_data.png)
+
+**大小**：64字节  
+
+    memset(bdb->opaque, 0, 64);
+
+**comparator**
+
+* `0x0` : lexical
+* `0x1` : decimal
+* `0x2` : int32
+* `0x3` : int64
+* `0xff`: other
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_node">Node Data Persistence</h3>
+
+* [tcbdbnodesave](#id_code_tcbdbnodesave)
+* [tcbdbnodeload](#id_code_tcbdbnodeload)
+
+对应的hdb接口：
+
+    tchdbput(bdb->hdb, hbuf, step, TCXSTRPTR(rbuf), TCXSTRSIZE(rbuf))
+
+涉及的数据: 
+
+    # BDBNODE
+    uint64_t id; // ID number of the node
+    uint64_t heir; // ID of the child before the first index
+    TCPTRLIST *idxs; // list of indices
+    # BDBIDX
+    uint64_t pid; // ID number of the referring page
+    int ksiz; // size of the key region
+
+二进制结构：
+    
+![node_data](node_data.png)
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_leaf">Leaf Data Persistence</h3>
+
+* [tcbdbleafsave](#id_code_tcbdbleafsave)
+* [tcbdbleafload](#id_code_tcbdbleafload)
+
+对应的hdb接口：
+
+    tchdbput(bdb->hdb, hbuf, step, TCXSTRPTR(rbuf), TCXSTRSIZE(rbuf))
+
+涉及的数据: 
+
+    # BDBLEAF
+    uint64_t id; // ID number of the leaf
+    uint64_t prev; // ID number of the previous leaf
+    uint64_t next; // ID number of the next leaf
+    TCPTRLIST *recs; // list of records
+    # BDBREC
+    int ksiz; // size of the key region
+    int vsiz; // size of the value region
+    TCLIST *rest; // list of value objects
+
+二进制结构：
+
+![leaf_data](leaf_data.png)
+
+[回顶部](#id_top)
+
+<h3 id="id_bdb_history">History</h3>
+
+涉及的数据: 
+
+    # TCBDB
+    uint64_t *hist; /* history array of visited nodes */
+    int hnum;       /* number of element of the history array */
+    
+大小：
+
+    # tcbdbnew
+    TCMALLOC(bdb->hist, sizeof(*bdb->hist) * BDBLEVELMAX);
+    
+    #define BDBLEVELMAX    64                // max level of B+ tree
+
+更新点：
+
+* [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)  
+    * [tcbdbputimpl](#id_code_tcbdbputimpl)  
+    * [tcbdboutimpl](#id_code_tcbdboutimpl)  
+    * [tcbdboutlist](#id_code_tcbdboutlist)  
+    * [tcbdbgetimpl](#id_code_tcbdbgetimpl)
+    * [tcbdbgetnum](#id_code_tcbdbgetnum)
+    * [tcbdbgetlist](#id_code_tcbdbgetlist)
+    * [tcbdbcurjumpimpl](#id_code_tcbdbcurjumpimpl)
+    * [tcbdbcuroutimpl](#id_code_tcbdbcuroutimpl)
+
+引用点：
+
+* [tcbdbleafkill](#id_code_tcbdbleafkill)
+* [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
+* [tcbdbputimpl](#id_code_tcbdbputimpl)
+
+总结：
+
+* `BDB` 的数据结构中没有对 **父节点** 的引用字段，这不便于回溯
+* `hist` 记录 **从树根到树叶的完整路径** ，用于回溯更新（树枝分裂，树叶删除）
+* 每次进行数据的更新、查询，都会对B+树进行搜索，每次搜索都会更新 `hist`，缓存最近一次的搜索记录（从树根到叶子）
+* B+树的更新会涉及到节点的分裂，分裂的过程会利用到缓存的 `hist` ，回溯更新至根节点
+* `hist` 最大的深度是64层
+
+[回顶部](#id_top)
 
 <h2 id="id_api">API</h2>
 
@@ -565,225 +784,6 @@ A B+ tree database object is created with the function `tcbdbnew` and is deleted
 #### tcbdbopen & tcbdbclose ####
 
 The function `tcbdbopen` is used to open a database file and the function `tcbdbclose` is used to close the database file. **To avoid data missing or corruption, it is important to close every database file when it is no longer in use. It is forbidden for multible database objects in a process to open the same database at the same time.**
-
-[回顶部](#id_top)
-
-<h2 id="id_bdb">BDB</h2>
-
-<h3 id="id_bdb_structs">Structs</h3>
-
-* [TCBDB](#id_code_struct_tcbdb)
-* [BDBREC](#id_code_bdbrec)
-* [BDBLEAF](#id_code_bdbleaf)
-* [BDBIDX](#id_code_bdbidx)
-* [BDBNODE](#id_code_bdbnode)
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_cache">Cache</h3>
-
-    # TCBDB
-    TCMAP *leafc; /* cache for leaves */
-    TCMAP *nodec; /* cache for nodes */
-
-使用到的接口：
-
-* [tcbdbcopy](#id_code_tcbdbcopy)
-* [tcbdbmemsync](#id_code_tcbdbmemsync)
-* [tcbdbnodeload](#id_code_tcbdbnodeload)
-    * [tcbdbleafkill](#id_code_tcbdbleafkill)
-    * [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
-    * [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_tcbdbput">Put</h3>
-
-**所有的put操作都是写内存，并不直接持久化到硬盘**
-
-* [tcbdbleafaddrec](#id_code_tcbdbleafaddrec)
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_persist">Persist</h3>
-
-关键字段：
-
-    # tcbdbopenimpl
-    bdb->opaque = tchdbopaque(bdb->hdb);
-
-#### 调用点 ####
-
-* [tcbdbcopy](#id_code_tcbdbcopy)
-* [tcbdbmemsync](#id_code_tcbdbmemsync)
-    * [tcbdbtranbegin](#id_code_tcbdbtranbegin)
-    * [tcbdbtrancommit](#id_code_tcbdbtrancommit)
-* [tcbdbleafcacheout](#id_code_tcbdbleafcacheout)
-    * [tcbdbcacheclear](#id_code_tcbdbcacheclear)
-    * [tcbdbcacheadjust](#id_code_tcbdbcacheadjust)
-    * [tcbdbcloseimpl](#id_code_tcbdbcloseimpl)
-    * [tcbdbforeachimpl](#id_code_tcbdbforeachimpl)
-* [tcbdbopenimpl](#id_code_tcbdbopenimpl)
-
-[回顶部](#id_top)
-
-#### 持久化到硬盘的时机 ####
-
-* **B+树调整**
-* **事务**
-* **打开/关闭数据库**
-* **数据库备份**
-* **调用者遍历数据库**
-
-#### 二进制结构 ####
-
-* `meta data` 为固定64字节
-* `node data` 和 `leaf data` 的持久化通过 `hdb` 的 kv 接口完成，key由每个节点的 id 经过格式化处理后生成，value通过专用的二进制格式序列化而产生。
-* `node data` 和 `leaf data` 的专用二进制格式每个数字项都是 **可变长度** （数据压缩），相关的接口为：  
-    * [TCSETVNUMBUF](#id_code_tcsetvnumbuf)
-    * [TCSETVNUMBUF64](#id_code_id_code_tcsetvnumbuf64)
-    * [TCREADVNUMBUF](#id_code_tcreadvnumbuf)
-    * [TCREADVNUMBUF64](#id_code_tcreadvnumbuf64)
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_meta">Meta Data Persistence</h3>
-
-* [tcbdbdumpmeta](#id_code_tcbdbdumpmeta)
-* [tcbdbloadmeta](#id_code_tcbdbloadmeta)
-
-涉及的数据: 
-
-    # TCBDB
-    TCCMP cmp; /* pointer to the comparison function */
-    uint32_t lmemb; /* number of members in each leaf */
-    uint32_t nmemb; /* number of members in each node */
-    uint64_t root; /* ID number of the root page */
-    uint64_t first; /* ID number of the first leaf */
-    uint64_t last; /* ID number of the last leaf */
-    uint64_t lnum; /* number of leaves */
-    uint64_t nnum; /* number of nodes */
-    uint64_t rnum; /* number of records */
-    
-    # reference
-    
-    # tcbdbsearchleaf
-    uint64_t pid = bdb->root;
-    # tcbdbcurfirstimpl
-    cur->id = bdb->first;
-    # tcbdbcurlastimpl
-    cur->id = bdb->last;
-
-二进制结构：
-
-![meta_data](meta_data.png)
-
-**大小**：64字节  
-
-    memset(bdb->opaque, 0, 64);
-
-**comparator**
-
-* `0x0` : lexical
-* `0x1` : decimal
-* `0x2` : int32
-* `0x3` : int64
-* `0xff`: other
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_node">Node Data Persistence</h3>
-
-* [tcbdbnodesave](#id_code_tcbdbnodesave)
-* [tcbdbnodeload](#id_code_tcbdbnodeload)
-
-对应的hdb接口：
-
-    tchdbput(bdb->hdb, hbuf, step, TCXSTRPTR(rbuf), TCXSTRSIZE(rbuf))
-
-涉及的数据: 
-
-    # BDBNODE
-    uint64_t id; // ID number of the node
-    uint64_t heir; // ID of the child before the first index
-    TCPTRLIST *idxs; // list of indices
-    # BDBIDX
-    uint64_t pid; // ID number of the referring page
-    int ksiz; // size of the key region
-
-二进制结构：
-    
-![node_data](node_data.png)
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_leaf">Leaf Data Persistence</h3>
-
-* [tcbdbleafsave](#id_code_tcbdbleafsave)
-* [tcbdbleafload](#id_code_tcbdbleafload)
-
-对应的hdb接口：
-
-    tchdbput(bdb->hdb, hbuf, step, TCXSTRPTR(rbuf), TCXSTRSIZE(rbuf))
-
-涉及的数据: 
-
-    # BDBLEAF
-    uint64_t id; // ID number of the leaf
-    uint64_t prev; // ID number of the previous leaf
-    uint64_t next; // ID number of the next leaf
-    TCPTRLIST *recs; // list of records
-    # BDBREC
-    int ksiz; // size of the key region
-    int vsiz; // size of the value region
-    TCLIST *rest; // list of value objects
-
-二进制结构：
-
-![leaf_data](leaf_data.png)
-
-[回顶部](#id_top)
-
-<h3 id="id_bdb_history">History</h3>
-
-涉及的数据: 
-
-    # TCBDB
-    uint64_t *hist; /* history array of visited nodes */
-    int hnum;       /* number of element of the history array */
-    
-大小：
-
-    # tcbdbnew
-    TCMALLOC(bdb->hist, sizeof(*bdb->hist) * BDBLEVELMAX);
-    
-    #define BDBLEVELMAX    64                // max level of B+ tree
-
-更新点：
-
-* [tcbdbsearchleaf](#id_code_tcbdbsearchleaf)  
-    * [tcbdbputimpl](#id_code_tcbdbputimpl)  
-    * [tcbdboutimpl](#id_code_tcbdboutimpl)  
-    * [tcbdboutlist](#id_code_tcbdboutlist)  
-    * [tcbdbgetimpl](#id_code_tcbdbgetimpl)
-    * [tcbdbgetnum](#id_code_tcbdbgetnum)
-    * [tcbdbgetlist](#id_code_tcbdbgetlist)
-    * [tcbdbcurjumpimpl](#id_code_tcbdbcurjumpimpl)
-    * [tcbdbcuroutimpl](#id_code_tcbdbcuroutimpl)
-
-引用点：
-
-* [tcbdbleafkill](#id_code_tcbdbleafkill)
-* [tcbdbnodesubidx](#id_code_tcbdbnodesubidx)
-* [tcbdbputimpl](#id_code_tcbdbputimpl)
-
-总结：
-
-* `BDB` 的数据结构中没有对 **父节点** 的引用字段，这不便于回溯
-* `hist` 记录 **从树根到树叶的完整路径** ，用于回溯更新（树枝分裂，树叶删除）
-* 每次进行数据的更新、查询，都会对B+树进行搜索，每次搜索都会更新 `hist`，缓存最近一次的搜索记录（从树根到叶子）
-* B+树的更新会涉及到节点的分裂，分裂的过程会利用到缓存的 `hist` ，回溯更新至根节点
-* `hist` 最大的深度是64层
 
 [回顶部](#id_top)
 
