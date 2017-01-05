@@ -2666,3 +2666,5 @@ The function `tcbdbopen` is used to open a database file and the function `tcbdb
       leaf->dirty = true;
       return tcbdbcuradjust(cur, true) || tchdbecode(bdb->hdb) == TCENOREC;
     }
+
+[回顶部](#id_top)
